@@ -14,7 +14,7 @@ uploaded = st.file_uploader(
     "Upload FBA Carton Detail file",
     type=["xlsx", "xlsm", "xltx", "xltm", "xls", "csv", "tsv"],
     help="Supported formats: .xlsx, .xlsm, .xltx, .xltm, .xls, .csv, .tsv. "
-    "The file should contain 'FBA Carton Detail' in cell A1.",
+    "The app reads data by column position, so header labels can vary between uploads.",
 )
 
 if uploaded is not None:

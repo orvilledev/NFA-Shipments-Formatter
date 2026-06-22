@@ -1,6 +1,7 @@
 import csv
 import io
 import os
+import re
 from io import BytesIO
 
 import xlrd
@@ -22,37 +23,28 @@ def parse_input(source, filename: str | None = None) -> tuple[str, list[dict]]:
     """Parse an FBA Carton Detail file into structured carton data."""
     rows = _load_rows(source, filename)
 
-    shipment_id = None
+    shipment_id = _extract_shipment_id(rows, filename)
     cartons: list[dict] = []
     current = None
 
     for row in rows:
-        label = row[0]
-        if label == "FBA Carton Detail" and row[1]:
-            shipment_id = str(row[1]).strip()
-        elif label == "Carton#:":
+        if _is_carton_row(row):
             if current:
                 cartons.append(current)
             current = {
-                "carton_id": str(row[1]),
+                "carton_id": _format_identifier(row[1]),
                 "items": [],
                 "weight": None,
                 "length": None,
                 "width": None,
                 "height": None,
             }
-        elif current and label == "Total":
-            current["weight"] = _as_int(row[5])
-            current["length"] = _as_float(row[6])
-            current["width"] = _as_float(row[7])
-            current["height"] = _as_float(row[8])
-        elif (
-            current
-            and label
-            and label
-            not in ("Sku", "Carton#:", "Total", "FBA Carton Detail", "Total Ctns:")
-            and row[3] is not None
-        ):
+            if _has_dims(row):
+                _apply_dims(current, row)
+        elif current and _is_total_row(row):
+            if _has_dims(row):
+                _apply_dims(current, row)
+        elif current and _is_product_row(row):
             current["items"].append({"upc": _format_upc(row[1]), "qty": int(row[3])})
 
     if current:
@@ -60,8 +52,8 @@ def parse_input(source, filename: str | None = None) -> tuple[str, list[dict]]:
 
     if not shipment_id:
         raise ValueError(
-            "Could not find shipment ID. Expected 'FBA Carton Detail' in cell A1 "
-            "with the shipment ID in cell B1."
+            "Could not find shipment ID. Expected an FBA shipment ID near the top of the file "
+            "or in the uploaded filename."
         )
     if not cartons:
         raise ValueError("No cartons found. Expected rows starting with 'Carton#:'.")
@@ -232,6 +224,91 @@ def _normalize_cell(value):
             return int(value)
         return value
     return value
+
+
+def _extract_shipment_id(rows: list[tuple], filename: str | None) -> str | None:
+    for row in rows:
+        if row[0] == "FBA Carton Detail" and row[1]:
+            return str(row[1]).strip()
+
+    for row in rows[:5]:
+        candidate = _normalize_label(row[0])
+        if candidate and re.fullmatch(r"FBA[A-Z0-9]+", candidate, re.IGNORECASE):
+            return candidate.upper()
+
+    if filename:
+        match = re.search(r"(FBA[A-Z0-9]+)", os.path.basename(filename), re.IGNORECASE)
+        if match:
+            return match.group(1).upper()
+
+    return None
+
+
+def _is_carton_row(row: tuple) -> bool:
+    label = _normalize_label(row[0])
+    return bool(label and (label == "Carton#:" or label.startswith("Carton#:")))
+
+
+def _is_total_row(row: tuple) -> bool:
+    for index in (0, 2):
+        if _normalize_label(row[index]) == "Total":
+            return True
+    return False
+
+
+def _is_footer_row(row: tuple) -> bool:
+    label = _normalize_label(row[0])
+    return bool(label and label.startswith("Total Ctns:"))
+
+
+def _is_header_row(row: tuple) -> bool:
+    return _normalize_label(row[0]) == "Sku"
+
+
+def _is_product_row(row: tuple) -> bool:
+    if _is_header_row(row) or _is_carton_row(row) or _is_total_row(row) or _is_footer_row(row):
+        return False
+    if row[0] is None or row[3] is None:
+        return False
+    if row[1] is None:
+        return False
+    try:
+        int(row[3])
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _has_dims(row: tuple) -> bool:
+    return any(row[index] is not None for index in (5, 6, 7, 8))
+
+
+def _apply_dims(carton: dict, row: tuple) -> None:
+    if row[5] is not None:
+        carton["weight"] = _as_int(row[5])
+    if row[6] is not None:
+        carton["length"] = _as_float(row[6])
+    if row[7] is not None:
+        carton["width"] = _as_float(row[7])
+    if row[8] is not None:
+        carton["height"] = _as_float(row[8])
+
+
+def _normalize_label(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _format_identifier(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, int):
+        return str(value)
+    return str(value).strip()
 
 
 def _format_upc(value) -> str:
