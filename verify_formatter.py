@@ -20,7 +20,7 @@ def read_cells(path_or_buf):
 
 
 with open(INPUT, "rb") as f:
-    buf, filename, summary = format_shipment(f)
+    buf, filename, summary = format_shipment(f, INPUT)
 
 assert filename == "FBA19FJ35VLB-Box Contents.xlsx"
 

@@ -11,14 +11,15 @@ st.markdown(
 )
 
 uploaded = st.file_uploader(
-    "Upload FBA Carton Detail file (.xlsx)",
-    type=["xlsx"],
-    help="The input file should contain 'FBA Carton Detail' in cell A1.",
+    "Upload FBA Carton Detail file",
+    type=["xlsx", "xlsm", "xltx", "xltm", "xls", "csv", "tsv"],
+    help="Supported formats: .xlsx, .xlsm, .xltx, .xltm, .xls, .csv, .tsv. "
+    "The file should contain 'FBA Carton Detail' in cell A1.",
 )
 
 if uploaded is not None:
     try:
-        output_buffer, filename, summary = format_shipment(uploaded)
+        output_buffer, filename, summary = format_shipment(uploaded, uploaded.name)
 
         st.success("File processed successfully.")
 
@@ -52,4 +53,4 @@ if uploaded is not None:
         st.error(f"Failed to process file: {exc}")
 
 else:
-    st.info("Upload an `.xlsx` file to get started.")
+    st.info("Upload an Excel or CSV file to get started.")

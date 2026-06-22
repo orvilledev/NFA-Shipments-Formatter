@@ -1,19 +1,32 @@
+import csv
+import io
+import os
 from io import BytesIO
 
+import xlrd
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 
+SUPPORTED_EXTENSIONS = {
+    ".xlsx",
+    ".xlsm",
+    ".xltx",
+    ".xltm",
+    ".xls",
+    ".csv",
+    ".tsv",
+}
 
-def parse_input(source) -> tuple[str, list[dict]]:
-    """Parse an FBA Carton Detail workbook into structured carton data."""
-    wb = load_workbook(source, data_only=True)
-    ws = wb.active
+
+def parse_input(source, filename: str | None = None) -> tuple[str, list[dict]]:
+    """Parse an FBA Carton Detail file into structured carton data."""
+    rows = _load_rows(source, filename)
 
     shipment_id = None
     cartons: list[dict] = []
     current = None
 
-    for row in ws.iter_rows(min_row=1, values_only=True):
+    for row in rows:
         label = row[0]
         if label == "FBA Carton Detail" and row[1]:
             shipment_id = str(row[1]).strip()
@@ -40,7 +53,7 @@ def parse_input(source) -> tuple[str, list[dict]]:
             not in ("Sku", "Carton#:", "Total", "FBA Carton Detail", "Total Ctns:")
             and row[3] is not None
         ):
-            current["items"].append({"upc": str(row[1]), "qty": int(row[3])})
+            current["items"].append({"upc": _format_upc(row[1]), "qty": int(row[3])})
 
     if current:
         cartons.append(current)
@@ -98,9 +111,11 @@ def build_output(shipment_id: str, cartons: list[dict]) -> tuple[BytesIO, str]:
     return buffer, filename
 
 
-def format_shipment(source) -> tuple[BytesIO, str, dict]:
+def format_shipment(source, filename: str | None = None) -> tuple[BytesIO, str, dict]:
     """Parse input and return output bytes, filename, and summary stats."""
-    shipment_id, cartons = parse_input(source)
+    if filename is None and hasattr(source, "name"):
+        filename = source.name
+    shipment_id, cartons = parse_input(source, filename)
     output_buffer, filename = build_output(shipment_id, cartons)
 
     total_units = sum(item["qty"] for carton in cartons for item in carton["items"])
@@ -114,6 +129,119 @@ def format_shipment(source) -> tuple[BytesIO, str, dict]:
         "total_weight": total_weight,
     }
     return output_buffer, filename, summary
+
+
+def _read_bytes(source) -> bytes:
+    if isinstance(source, bytes):
+        return source
+    if isinstance(source, str):
+        with open(source, "rb") as handle:
+            return handle.read()
+    if hasattr(source, "read"):
+        data = source.read()
+        if hasattr(source, "seek"):
+            source.seek(0)
+        return data
+    raise TypeError("Unsupported input source type.")
+
+
+def _get_extension(filename: str | None) -> str:
+    if not filename:
+        return ".xlsx"
+    return os.path.splitext(filename)[1].lower()
+
+
+def _load_rows(source, filename: str | None = None) -> list[tuple]:
+    data = _read_bytes(source)
+    ext = _get_extension(filename)
+
+    if ext not in SUPPORTED_EXTENSIONS:
+        supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+        raise ValueError(f"Unsupported file type '{ext or '(none)'}'. Supported: {supported}")
+
+    if ext in {".csv", ".tsv"}:
+        return _load_rows_csv(data, delimiter="\t" if ext == ".tsv" else None)
+    if ext == ".xls":
+        return _load_rows_xls(data)
+    return _load_rows_xlsx(BytesIO(data))
+
+
+def _load_rows_xlsx(stream) -> list[tuple]:
+    wb = load_workbook(stream, data_only=True)
+    ws = wb.active
+    rows = []
+    for row in ws.iter_rows(values_only=True):
+        rows.append(_pad_row(row))
+    return rows
+
+
+def _load_rows_xls(data: bytes) -> list[tuple]:
+    book = xlrd.open_workbook(file_contents=data)
+    sheet = book.sheet_by_index(0)
+    rows = []
+    for row_idx in range(sheet.nrows):
+        row = [
+            _normalize_cell(sheet.cell_value(row_idx, col_idx))
+            if col_idx < sheet.ncols
+            else None
+            for col_idx in range(max(sheet.ncols, 9))
+        ]
+        rows.append(_pad_row(row))
+    return rows
+
+
+def _load_rows_csv(data: bytes, delimiter: str | None = None) -> list[tuple]:
+    for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            text = data.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise ValueError("Could not decode CSV file. Save it as UTF-8 and try again.")
+
+    if delimiter is None:
+        try:
+            delimiter = csv.Sniffer().sniff(text[:8192], delimiters=",\t;").delimiter
+        except csv.Error:
+            delimiter = ","
+
+    rows = []
+    for row in csv.reader(io.StringIO(text), delimiter=delimiter):
+        if not any(cell.strip() for cell in row):
+            continue
+        rows.append(_pad_row(_normalize_cell(cell) or None for cell in row))
+    return rows
+
+
+def _pad_row(row) -> tuple:
+    values = [_normalize_cell(value) for value in row]
+    while len(values) < 9:
+        values.append(None)
+    return tuple(values[:9])
+
+
+def _normalize_cell(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else None
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        return value
+    return value
+
+
+def _format_upc(value) -> str:
+    if value is None:
+        raise ValueError("Missing UPC value in input file.")
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, int):
+        return str(value)
+    return str(value).strip()
 
 
 def _auto_fit_columns(ws, min_widths: dict[str, float] | None = None) -> None:
