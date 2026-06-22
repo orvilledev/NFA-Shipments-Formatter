@@ -1,6 +1,7 @@
 from io import BytesIO
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.utils import get_column_letter
 
 
 def parse_input(source) -> tuple[str, list[dict]]:
@@ -67,6 +68,11 @@ def build_output(shipment_id: str, cartons: list[dict]) -> tuple[BytesIO, str]:
         for item in carton["items"]:
             ws_contents.append([box_number, item["upc"], item["qty"]])
 
+    for row_idx in range(2, ws_contents.max_row + 1):
+        ws_contents.cell(row=row_idx, column=2).number_format = "@"
+
+    _auto_fit_columns(ws_contents, min_widths={"B": 14})
+
     ws_dims = wb.create_sheet("Weights and Dimensions")
     ws_dims.append(
         ["Box Number", "Weight", "Carton Length", "Carton Width", "Carton Height"]
@@ -81,6 +87,8 @@ def build_output(shipment_id: str, cartons: list[dict]) -> tuple[BytesIO, str]:
                 carton["height"],
             ]
         )
+
+    _auto_fit_columns(ws_dims)
 
     buffer = BytesIO()
     wb.save(buffer)
@@ -106,6 +114,22 @@ def format_shipment(source) -> tuple[BytesIO, str, dict]:
         "total_weight": total_weight,
     }
     return output_buffer, filename, summary
+
+
+def _auto_fit_columns(ws, min_widths: dict[str, float] | None = None) -> None:
+    """Set column widths from content so values are visible when the file opens."""
+    min_widths = min_widths or {}
+    for col_idx in range(1, ws.max_column + 1):
+        column_letter = get_column_letter(col_idx)
+        max_length = 0
+        for row in ws.iter_rows(
+            min_row=1, max_row=ws.max_row, min_col=col_idx, max_col=col_idx
+        ):
+            for cell in row:
+                if cell.value is not None:
+                    max_length = max(max_length, len(str(cell.value)))
+        width = max(max_length + 2, min_widths.get(column_letter, 0))
+        ws.column_dimensions[column_letter].width = width
 
 
 def _as_int(value):
